@@ -4,7 +4,8 @@ Satellite Image Dataset Loader
 This module provides functionality to load and preprocess satellite imagery
 for classification tasks using PyTorch and TorchVision.
 
-Classes: forest, water, urban, agriculture, barren
+Classes (EuroSAT): AnnualCrop, Forest, HerbaceousVegetation, Highway,
+    Industrial, Pasture, PermanentCrop, Residential, River, SeaLake
 """
 
 import torch
