@@ -135,6 +135,81 @@ def validate(
     return {"loss": avg_loss, "accuracy": accuracy}
 
 
+# ── Feature Caching for Optimized Federated Training ───────────────────
+
+
+class FCClassifier(nn.Module):
+    """Lightweight FC-only classifier for use with cached backbone features."""
+
+    def __init__(self, in_features=2048, num_classes=NUM_CLASSES):
+        super().__init__()
+        self.fc = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.fc(x)
+
+
+@torch.no_grad()
+def extract_features(dataloader, device):
+    """
+    Run frozen ResNet-50 backbone once and cache 2048-dim feature vectors.
+    Eliminates redundant CNN forward passes during federated training.
+    """
+    backbone = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+    backbone.fc = nn.Identity()
+    backbone = backbone.to(device).eval()
+
+    use_amp = device.type == "cuda"
+    all_features, all_labels = [], []
+
+    for images, labels in dataloader:
+        images = images.to(device, non_blocking=True)
+        with torch.amp.autocast(device_type="cuda", enabled=use_amp):
+            features = backbone(images)
+        all_features.append(features.float().cpu())
+        all_labels.append(labels)
+
+    del backbone
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return torch.cat(all_features), torch.cat(all_labels)
+
+
+def train_fc_epoch(fc_model, dataloader, optimizer, criterion, device):
+    """Train FC classifier on cached features for one epoch."""
+    fc_model.train()
+    running_loss = correct = total = 0
+    for features, labels in dataloader:
+        features = features.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        optimizer.zero_grad()
+        outputs = fc_model(features)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item() * features.size(0)
+        correct += (outputs.argmax(1) == labels).sum().item()
+        total += labels.size(0)
+    return {"loss": running_loss / total, "accuracy": 100.0 * correct / total}
+
+
+def validate_fc(fc_model, dataloader, criterion, device):
+    """Validate FC classifier on cached features."""
+    fc_model.eval()
+    running_loss = correct = total = 0
+    with torch.no_grad():
+        for features, labels in dataloader:
+            features = features.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            outputs = fc_model(features)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item() * features.size(0)
+            correct += (outputs.argmax(1) == labels).sum().item()
+            total += labels.size(0)
+    return {"loss": running_loss / total, "accuracy": 100.0 * correct / total}
+
+
 def main():
     """Run one training epoch to verify the pipeline end-to-end."""
 
